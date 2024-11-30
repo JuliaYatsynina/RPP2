@@ -36,7 +36,7 @@ def health():
 def process():
     global current_instance_index
     if not active_instances:
-        return jsonify({"error": "Нет активных экземпляров"}), 503
+        return jsonify({"error": "No active instances"}), 503
     instance = active_instances[current_instance_index]  # Получение текущего активного экземпляра
     current_instance_index = (current_instance_index + 1) % len(active_instances)  # Обновление индекса
     response = requests.get(f"http://{instance['ip']}:{instance['port']}/process")  # Запрос к экземпляру
@@ -129,7 +129,7 @@ def remove_instance():
 def catch_all(path):
     global current_instance_index  # Использование глобальной переменной
     if not active_instances:
-        return jsonify({"error": "Нет активных экземпляров"}), 503
+        return jsonify({"error": "No active instances"}), 503
     instance = active_instances[current_instance_index]  # Получение текущего активного экземпляра
     current_instance_index = (current_instance_index + 1) % len(active_instances)  # Обновление индекса
     response = requests.get(f"http://{instance['ip']}:{instance['port']}/{path}")  # Запрос к экземпляру
