@@ -1,142 +1,109 @@
-from flask import Flask, request, jsonify, redirect
+from flask import Flask, jsonify, request, redirect, url_for
 import requests
-import threading  # Импорт модуля для работы с потоками
-import time  # Импорт модуля для работы с временем
+import threading
+import time
 
 app = Flask(__name__)
 
-instances = []  # Список для хранения всех экземпляров
-active_instances = []  # Список для хранения активных экземпляров
-current_instance_index = 0  # Индекс текущего активного экземпляра
+# Список инстансов
+instances = [
+    {"ip": "127.0.0.1", "port": 5001, "active": True},
+    {"ip": "127.0.0.1", "port": 5002, "active": True},
+    {"ip": "127.0.0.1", "port": 5003, "active": True},
+]
+current_instance = 0
 
 
-# Функция для проверки состояния экземпляров
-def check_instance_health():
-    global active_instances  # Использование глобальной переменной
-    while True:  # Бесконечный цикл
-        active_instances = []
+# Функция проверки доступности инстансов
+def check_health():
+    while True:
         for instance in instances:
             try:
-                response = requests.get(f"http://{instance['ip']}:{instance['port']}/health")  # Запрос состояния
-                if response.status_code == 200:
-                    active_instances.append(instance)  # Добавление активного экземпляра
-            except requests.exceptions.RequestException:  # Обработка исключений
-                pass  # Пропуск исключений
+                response = requests.get(f"http://{instance['ip']}:{instance['port']}/health", timeout=2)
+                instance["active"] = response.status_code == 200
+            except requests.RequestException:
+                instance["active"] = False
         time.sleep(5)
 
 
-# Эндпоинт для проверки состояния балансировщика
-@app.route('/health')
+# Эндпоинт для получения состояния всех инстансов
+@app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "healthy", "active_instances": len(active_instances)})  # Возврат состояния
+    return jsonify(instances)
 
 
-# Эндпоинт для обработки запросов
-@app.route('/process')
+# Эндпоинт для обработки запросов (Round Robin)
+@app.route('/process', methods=['GET'])
 def process():
-    global current_instance_index
+    global current_instance
+    active_instances = [i for i in instances if i["active"]]
     if not active_instances:
-        return jsonify({"error": "No active instances"}), 503
-    instance = active_instances[current_instance_index]  # Получение текущего активного экземпляра
-    current_instance_index = (current_instance_index + 1) % len(active_instances)  # Обновление индекса
-    response = requests.get(f"http://{instance['ip']}:{instance['port']}/process")  # Запрос к экземпляру
-    return jsonify(response.json())
+        return jsonify({"error": "No active instances available"}), 503
+
+    instance = active_instances[current_instance]
+    current_instance = (current_instance + 1) % len(active_instances)
+    try:
+        response = requests.get(f"http://{instance['ip']}:{instance['port']}/process")
+        return response.json(), response.status_code
+    except requests.RequestException:
+        return jsonify({"error": "Instance unreachable"}), 503
 
 
-# Главная страница
-@app.route('/')
-def home():
-    instance_rows = ''.join(
-        [f"<tr><td>{index}</td><td>{instance['ip']}</td><td>{instance['port']}</td></tr>" for index, instance in
-         enumerate(instances)])  # Генерация строк таблицы
-    return f'''
-    <html>
-    <head>
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                margin: 20px;
-            }}
-            h1, h2 {{
-                color: #333;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-bottom: 20px;
-            }}
-            th, td {{
-                border: 1px solid #ddd;
-                padding: 8px;
-                text-align: left;
-            }}
-            input[type="submit"] {{
-                background-color: #4CAF50;
-                color: white;
-                padding: 10px 20px;
-                border: none;
-                cursor: pointer;
-            }}
-        </style>
-    </head>
-    <body>
-        <h1>Балансер</h1>
-        <h2>Активные экземпляры</h2>
-        <table>
-            <tr>
-                <th>Индекс</th>
-                <th>IP</th>
-                <th>Порт</th>
-            </tr>
-            {instance_rows}
-        </table>
-        <h2>Добавить экземпляры</h2>
-        <form action="/add_instance" method="post">
-            IP: <input type="text" name="ip"><br>
-            Port: <input type="text" name="port"><br>
-            <input type="submit" value="Добавить">
-        </form>
-        <h2>Удалить экземпляры</h2>
-        <form action="/remove_instance" method="post">
-            Index: <input type="text" name="instance_index"><br>
-            <input type="submit" value="Удалить">
-        </form>
-    </body>
-    </html>
-    '''
+# Web UI для управления инстансами
+@app.route('/', methods=['GET'])
+def web_ui():
+    html = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Экземпляры</title>
+        </head>
+        <body>
+            <h1>Экземпляры</h1>
+            <form action='/add_instance' method='post'>
+                IP: <input name='ip' required> Port: <input name='port' required>
+                <button type='submit'>Добавить</button>
+            </form><br>
+            <table border='1'>
+                <tr>
+                    <th>IP</th>
+                    <th>Port</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+                
+        """
+    for idx, instance in enumerate(instances):
+        status = "Active" if instance["active"] else "Inactive"
+        html += f"<tr><td>{instance['ip']}</td><td>{instance['port']}</td><td>{status}</td>"
+        html += f"<td><form action='/remove_instance' method='post' style='display:inline;'>"
+        html += f"<input type='hidden' name='index' value='{idx}'>"
+        html += "<button type='submit'>Удалить</button></form></td></tr>"
+    html += "</table>"
+    return html
 
 
-# Эндпоинт для добавления нового экземпляра
+# Эндпоинт для добавления нового инстанса
 @app.route('/add_instance', methods=['POST'])
 def add_instance():
-    ip = request.form['ip']  # Получение IP из формы
-    port = request.form['port']  # Получение порта из формы
-    instances.append({"ip": ip, "port": port})  # Добавление нового экземпляра
-    return redirect('/')
+    ip = request.form['ip']
+    port = int(request.form['port'])
+    instances.append({"ip": ip, "port": port, "active": True})
+    return redirect(url_for('web_ui'))
 
 
-# Эндпоинт для удаления экземпляра
+# Эндпоинт для удаления инстанса
 @app.route('/remove_instance', methods=['POST'])
 def remove_instance():
-    instance_index = int(request.form['instance_index'])  # Получение индекса из формы
-    if 0 <= instance_index < len(instances):  # Проверка корректности индекса
-        instances.pop(instance_index)  # Удаление экземпляра
-    return redirect('/')
+    index = int(request.form['index'])
+    if 0 <= index < len(instances):
+        del instances[index]
+    return redirect(url_for('web_ui'))
 
 
-# Эндпоинт для перехвата всех запросов
-@app.route('/<path:path>', methods=['GET'])
-def catch_all(path):
-    global current_instance_index  # Использование глобальной переменной
-    if not active_instances:
-        return jsonify({"error": "No active instances"}), 503
-    instance = active_instances[current_instance_index]  # Получение текущего активного экземпляра
-    current_instance_index = (current_instance_index + 1) % len(active_instances)  # Обновление индекса
-    response = requests.get(f"http://{instance['ip']}:{instance['port']}/{path}")  # Запрос к экземпляру
-    return jsonify(response.json())
-
-
-# Запуск балансировщика нагрузки
+# Запуск фоновой проверки состояния инстансов
 if __name__ == '__main__':
-    threading.Thread(target=check_instance_health).start()  # Запуск потока для проверки состояния экземпляров
+    threading.Thread(target=check_health, daemon=True).start()
     app.run(port=5000)
